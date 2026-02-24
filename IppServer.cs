@@ -507,16 +507,32 @@ public class IppServer : BackgroundService
         w.WriteAttribute(ValueTagMimeType, "document-format-supported", "application/pdf");
         w.WriteAttributeAdditional(ValueTagMimeType, "image/urf");
 
-        // Массив URF
+        // URF: монохромный принтер без дуплекса — только W8 (8-bit grayscale) и RS600
+        // CP1/SRGB24/DM1 убраны: они для цветных/дуплексных принтеров
         w.WriteAttribute(ValueTagKeyword, "urf-supported", "V1.4");
-        w.WriteAttributeAdditional(ValueTagKeyword, "CP1");
         w.WriteAttributeAdditional(ValueTagKeyword, "W8");
-        w.WriteAttributeAdditional(ValueTagKeyword, "SRGB24");
         w.WriteAttributeAdditional(ValueTagKeyword, "RS600");
-        w.WriteAttributeAdditional(ValueTagKeyword, "DM1");
 
-        // 3. КРИТИЧНО: Если в URF есть SRGB24, принтер обязан заявить себя как цветной (1)
-        w.WriteIntAttribute("color-supported", ValueTagBoolean, 1);
+        // Canon MF3010 — монохромный. Должно совпадать с Color=F в mDNS TXT
+        w.WriteIntAttribute("color-supported", ValueTagBoolean, 0);
+
+        // Стороны: MF3010 без дуплекса — только one-sided
+        w.WriteAttribute(ValueTagKeyword, "sides-supported", "one-sided");
+        w.WriteAttribute(ValueTagKeyword, "sides-default", "one-sided");
+
+        // Финишинг: 3 = none (стандартный enum IPP)
+        w.WriteIntAttribute("finishings-default", ValueTagEnum, 3);
+        w.WriteIntAttribute("finishings-supported", ValueTagEnum, 3);
+
+        // Копии: поддерживается диапазон 1-99, по умолчанию 1
+        w.WriteIntAttribute("copies-default", ValueTagInteger, 1);
+        w.WriteRangeAttribute(0x33, "copies-supported", 1, 99);
+
+        // Качество печати: 3=draft, 4=normal, 5=high; по умолчанию normal
+        w.WriteIntAttribute("print-quality-default", ValueTagEnum, 4);
+        w.WriteIntAttribute("print-quality-supported", ValueTagEnum, 3);
+        w.WriteIntAttributeAdditional(ValueTagEnum, 4);
+        w.WriteIntAttributeAdditional(ValueTagEnum, 5);
 
         w.WriteAttribute(ValueTagKeyword, "pdl-override-supported", "attempted");
         w.WriteIntAttribute("printer-is-accepting-jobs", ValueTagBoolean, 1);
@@ -696,22 +712,53 @@ public class IppServer : BackgroundService
     }
 
     /// <summary>
-    /// Ищем байт 0x03 (end-of-attributes-tag) в IPP пакете.
-    /// После него идут данные документа.
-    /// Важно: 0x03 может встречаться и в значениях атрибутов, 
-    /// поэтому ищем его начиная с позиции 8 (после заголовка).
+    /// Корректно ищет конец IPP-атрибутов (тег 0x03) путём структурного обхода пакета.
+    /// Наивный поиск байта 0x03 ненадёжен: этот байт встречается внутри значений
+    /// атрибутов (например, printer-state=idle=3 кодируется как 0x00 0x00 0x00 0x03).
+    ///
+    /// IPP структура (RFC 8011):
+    ///   Заголовок: version(2) + op(2) + requestId(4) = 8 байт
+    ///   Затем чередуются:
+    ///     group-tag (0x01..0x0F) — начало новой группы атрибутов
+    ///     end-of-attributes-tag (0x03) — конец всех атрибутов, далее идут данные
+    ///     attribute-entry (0x10..0xFF) — тег значения, затем:
+    ///       name-length(2) + name(name-length) + value-length(2) + value(value-length)
+    ///       Если name-length == 0 — это дополнительное значение (additional value)
     /// </summary>
     private static int FindDocumentOffset(byte[] data)
     {
-        // IPP структура: версия(2) + операция(2) + requestId(4) = 8 байт заголовка
-        // Затем группы атрибутов, каждая начинается с group tag (0x01-0x0F)
-        // Конец атрибутов = тег 0x03
-        for (int i = 8; i < data.Length; i++)
+        if (data.Length < 8) return -1;
+
+        int pos = 8; // пропускаем 8-байтный IPP-заголовок
+
+        while (pos < data.Length)
         {
-            if (data[i] == 0x03) // end-of-attributes-tag
-                return i + 1;    // документ начинается сразу после
+            byte tag = data[pos];
+
+            // Тег конца атрибутов (end-of-attributes-tag)
+            if (tag == 0x03)
+                return pos + 1; // документ начинается сразу после этого байта
+
+            // Group delimiter tags (0x01..0x0F, кроме 0x03) — просто шагаем дальше
+            if (tag >= 0x01 && tag <= 0x0F)
+            {
+                pos++;
+                continue;
+            }
+
+            // Атрибут: value-tag (0x10..0xFF)
+            // Формат: tag(1) + name-length(2) + name(N) + value-length(2) + value(M)
+            if (pos + 3 > data.Length) break;
+
+            int nameLen = ((data[pos + 1] & 0xFF) << 8) | (data[pos + 2] & 0xFF);
+            pos += 3 + nameLen; // пропускаем tag + name-length + name
+
+            if (pos + 2 > data.Length) break;
+            int valueLen = ((data[pos] & 0xFF) << 8) | (data[pos + 1] & 0xFF);
+            pos += 2 + valueLen; // пропускаем value-length + value
         }
-        return -1;
+
+        return -1; // тег 0x03 не найден
     }
 
     /// <summary>

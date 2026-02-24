@@ -79,6 +79,19 @@ public class IppWriter
         WriteInt(value);
     }
 
+    /// Записывает атрибут типа rangeOfInteger (tag 0x33): lower + upper, 8 байт итого.
+    /// Используется для copies-supported и подобных диапазонных атрибутов.
+    public void WriteRangeAttribute(byte valueTag, string name, int lower, int upper)
+    {
+        var nameBytes = System.Text.Encoding.UTF8.GetBytes(name);
+        _bw.Write(valueTag);
+        WriteShort((short)nameBytes.Length);
+        _bw.Write(nameBytes);
+        WriteShort(8); // 2 x 4 байта
+        WriteInt(lower);
+        WriteInt(upper);
+    }
+
     public byte[] ToArray()
     {
         _bw.Flush();
