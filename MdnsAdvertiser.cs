@@ -71,16 +71,19 @@ public class MdnsAdvertiser :BackgroundService
         txt.Strings.Add("product=(Canon MF3010)");
 
         // КРИТИЧНО: Форматы. Без URF не будет работать.
-        txt.Strings.Add("pdl=application/pdf,image/urf,image/pwg-raster");
-        txt.Strings.Add("URF=V1.4,CP1,W8,SRGB24,RS600,DM1");
+        txt.Strings.Add("pdl=application/pdf,image/urf");
+        // URF для монохромного (W8=8-bit grayscale) принтера без дуплекса.
+        // Убраны: SRGB24 (только для цветных), CP1 (цветовые профили), DM1 (дуплекс).
+        // TLS=1.2 убран: сервер работает по HTTP, не HTTPS. Его присутствие заставляло
+        // iOS пытаться установить TLS-соединение при отправке Print-Job, которое молча
+        // падало — именно поэтому задание печати никогда не появлялось в логах.
+        txt.Strings.Add("URF=V1.4,W8,RS600");
 
-        // КРИТИЧНО: Статус шифрования (AirPrint требует указания, даже если none)
-        txt.Strings.Add("TLS=1.2");
         txt.Strings.Add("air=none");
         txt.Strings.Add("UUID=5365e660-f657-41a6-88a4-0994132ad372");
 
         // Дополнительные параметры
-        txt.Strings.Add("Color=F"); // У нас монохромный принтер
+        txt.Strings.Add("Color=F"); // Canon MF3010 — монохромный принтер
         txt.Strings.Add("Duplex=F");
         txt.Strings.Add("Scan=F");
 
