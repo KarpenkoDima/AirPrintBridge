@@ -315,7 +315,8 @@ public class IppServer : BackgroundService
         w.WriteAttributeAdditional(ValueTagKeyword, "DM1");
 
         // Canon MF3010 — монохромный. Должно совпадать с Color=F в mDNS TXT.
-        w.WriteIntAttribute("color-supported", ValueTagBoolean, 0);
+        // Boolean в IPP строго 1 байт (RFC 8010), WriteIntAttribute даёт 4 — iOS парсер падает.
+        w.WriteBooleanAttribute("color-supported", false);
 
         // Стороны: MF3010 без дуплекса — только one-sided
         w.WriteAttribute(ValueTagKeyword, "sides-supported", "one-sided");
@@ -336,7 +337,7 @@ public class IppServer : BackgroundService
         w.WriteIntAttributeAdditional(ValueTagEnum, 5);
 
         w.WriteAttribute(ValueTagKeyword, "pdl-override-supported", "attempted");
-        w.WriteIntAttribute("printer-is-accepting-jobs", ValueTagBoolean, 1);
+        w.WriteBooleanAttribute("printer-is-accepting-jobs", true);
         w.WriteIntAttribute("queued-job-count", ValueTagInteger, 0);
 
         w.WriteByte(TagEndOfAttribs);
