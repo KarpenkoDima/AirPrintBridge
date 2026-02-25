@@ -98,7 +98,7 @@ public class MdnsAdvertiser :BackgroundService
                     q.Name.ToString().TrimEnd('.') == subtypeFqdn))
                 return;
 
-            var response = new Message { IsResponse = true, AA = true };
+            var response = new Message { AA = true };
             response.Answers.Add(new PTRRecord
             {
                 Name = subtypeFqdn,
