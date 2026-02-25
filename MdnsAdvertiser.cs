@@ -52,12 +52,12 @@ public class MdnsAdvertiser :BackgroundService
             Address = localIp
         });
 
-        // 3. Сообщаем, что мы AirPrint совместимы
-        profile.Resources.Add(new PTRRecord
-        {
-            Name = "_universal._sub._ipp._tcp.local",
-            DomainName = profile.FullyQualifiedName
-        });
+        // Subtype _universal регистрируется через profile.Subtypes — только так библиотека
+        // Makaretu.Dns.Multicast создаёт PTR-запись _universal._sub._ipp._tcp.local и
+        // отвечает на неё при mDNS-запросах от iOS.
+        // Добавление PTRRecord вручную в profile.Resources НЕ работает — библиотека
+        // не отвечает на внешние PTR-запросы для произвольных имён из Resources.
+        profile.Subtypes.Add("_universal");
 
         // 4. ИДЕАЛЬНЫЕ TXT-ЗАПИСИ
         // Создаем TXTRecord вручную, чтобы iPhone получил их в одном пакете
