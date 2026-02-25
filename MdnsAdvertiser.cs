@@ -70,10 +70,13 @@ public class MdnsAdvertiser :BackgroundService
         txt.Strings.Add("note=Windows Shared Printer");
         txt.Strings.Add("product=(Canon MF3010)");
 
-        // Только PDF. URF убран намеренно: сервер не умеет декодировать растровый
-        // формат Apple. Без URF в pdl iOS переключается на PDF, который умеем печатать
-        // через PdfiumViewer. _universal._sub._ipp._tcp достаточен для AirPrint-совместимости.
-        txt.Strings.Add("pdl=application/pdf");
+        // КРИТИЧНО: без image/urf iOS считает принтер не AirPrint-совместимым и не показывает его.
+        // PDF указан первым — iOS будет присылать PDF для документов/текста.
+        // image/urf нужен только для фейс-контроля; если iOS пришлёт URF, PrintAsync его отклонит.
+        txt.Strings.Add("pdl=application/pdf,image/urf");
+        // Параметры Apple Raster. CP1=CMYK/grayscale, W8=8bit grey, RS600=600dpi, DM1=duplex-manual.
+        // SRGB24 убран: принтер монохромный (Color=F).
+        txt.Strings.Add("URF=V1.4,CP1,W8,RS600,DM1");
 
         txt.Strings.Add("air=none");
         txt.Strings.Add("UUID=5365e660-f657-41a6-88a4-0994132ad372");

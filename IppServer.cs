@@ -499,13 +499,20 @@ public class IppServer : BackgroundService
         w.WriteAttribute(ValueTagKeyword, "media-supported", "iso_a4_210x297mm");
         w.WriteAttributeAdditional(ValueTagKeyword, "na_letter_8.5x11in");
 
-        // Только PDF: URF не рекламируется, иначе iOS отправит растровый image/urf,
-        // который сервер не умеет декодировать → job исчезает без печати.
-        // Без URF iOS выбирает application/pdf — его PrintAsync через PdfiumViewer обрабатывает корректно.
+        // Форматы документов. PDF стоит первым и по умолчанию — iOS будет отдавать приоритет ему.
+        // image/urf ОБЯЗАТЕЛЕН: без него iOS не воспринимает принтер как AirPrint-совместимый.
         w.WriteAttribute(ValueTagMimeType, "document-format-default", "application/pdf");
         w.WriteAttribute(ValueTagMimeType, "document-format-supported", "application/pdf");
+        w.WriteAttributeAdditional(ValueTagMimeType, "image/urf");
 
-        // Canon MF3010 — монохромный. Должно совпадать с Color=F в mDNS TXT
+        // Обязательное подтверждение URF для AirPrint (без SRGB24 — принтер монохромный).
+        w.WriteAttribute(ValueTagKeyword, "urf-supported", "V1.4");
+        w.WriteAttributeAdditional(ValueTagKeyword, "CP1");
+        w.WriteAttributeAdditional(ValueTagKeyword, "W8");
+        w.WriteAttributeAdditional(ValueTagKeyword, "RS600");
+        w.WriteAttributeAdditional(ValueTagKeyword, "DM1");
+
+        // Canon MF3010 — монохромный. Должно совпадать с Color=F в mDNS TXT.
         w.WriteIntAttribute("color-supported", ValueTagBoolean, 0);
 
         // Стороны: MF3010 без дуплекса — только one-sided
