@@ -502,16 +502,11 @@ public class IppServer : BackgroundService
         w.WriteAttribute(ValueTagKeyword, "media-supported", "iso_a4_210x297mm");
         w.WriteAttributeAdditional(ValueTagKeyword, "na_letter_8.5x11in");
 
-        // Форматы (убрал pwg-raster, чтобы iOS не начал требовать дополнительные атрибуты разрешений)
+        // Только PDF: URF не рекламируется, иначе iOS отправит растровый image/urf,
+        // который сервер не умеет декодировать → job исчезает без печати.
+        // Без URF iOS выбирает application/pdf — его PrintAsync через PdfiumViewer обрабатывает корректно.
         w.WriteAttribute(ValueTagMimeType, "document-format-default", "application/pdf");
         w.WriteAttribute(ValueTagMimeType, "document-format-supported", "application/pdf");
-        w.WriteAttributeAdditional(ValueTagMimeType, "image/urf");
-
-        // URF: монохромный принтер без дуплекса — только W8 (8-bit grayscale) и RS600
-        // CP1/SRGB24/DM1 убраны: они для цветных/дуплексных принтеров
-        w.WriteAttribute(ValueTagKeyword, "urf-supported", "V1.4");
-        w.WriteAttributeAdditional(ValueTagKeyword, "W8");
-        w.WriteAttributeAdditional(ValueTagKeyword, "RS600");
 
         // Canon MF3010 — монохромный. Должно совпадать с Color=F в mDNS TXT
         w.WriteIntAttribute("color-supported", ValueTagBoolean, 0);

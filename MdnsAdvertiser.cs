@@ -70,14 +70,10 @@ public class MdnsAdvertiser :BackgroundService
         txt.Strings.Add("note=Windows Shared Printer");
         txt.Strings.Add("product=(Canon MF3010)");
 
-        // КРИТИЧНО: Форматы. Без URF не будет работать.
-        txt.Strings.Add("pdl=application/pdf,image/urf");
-        // URF для монохромного (W8=8-bit grayscale) принтера без дуплекса.
-        // Убраны: SRGB24 (только для цветных), CP1 (цветовые профили), DM1 (дуплекс).
-        // TLS=1.2 убран: сервер работает по HTTP, не HTTPS. Его присутствие заставляло
-        // iOS пытаться установить TLS-соединение при отправке Print-Job, которое молча
-        // падало — именно поэтому задание печати никогда не появлялось в логах.
-        txt.Strings.Add("URF=V1.4,W8,RS600");
+        // Только PDF. URF убран намеренно: сервер не умеет декодировать растровый
+        // формат Apple. Без URF в pdl iOS переключается на PDF, который умеем печатать
+        // через PdfiumViewer. _universal._sub._ipp._tcp достаточен для AirPrint-совместимости.
+        txt.Strings.Add("pdl=application/pdf");
 
         txt.Strings.Add("air=none");
         txt.Strings.Add("UUID=5365e660-f657-41a6-88a4-0994132ad372");
