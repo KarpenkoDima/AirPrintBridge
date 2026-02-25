@@ -86,6 +86,28 @@ public class MdnsAdvertiser :BackgroundService
         profile.Resources.Add(txt);
 
         _sd.Advertise(profile);
+
+        // The Makaretu library registers the subtype for announcement but does NOT respond
+        // to incoming PTR queries for _universal._sub._ipp._tcp.local.
+        // iOS sends this exact query to discover AirPrint printers, so we must answer it manually.
+        var subtypeFqdn = "_universal._sub._ipp._tcp.local";
+        _mdns.QueryReceived += (sender, e) =>
+        {
+            if (!e.Message.Questions.Any(q =>
+                    q.Type == DnsType.PTR &&
+                    q.Name.ToString().TrimEnd('.') == subtypeFqdn))
+                return;
+
+            var response = new Message { IsResponse = true, AA = true };
+            response.Answers.Add(new PTRRecord
+            {
+                Name = subtypeFqdn,
+                DomainName = profile.FullyQualifiedName,
+                TTL = TimeSpan.FromMinutes(75)
+            });
+            _mdns.SendAnswer(response);
+        };
+
         _mdns.Start();
 
         _logger.LogInformation("mDNS started on {IP}:{Port}", localIp, _printerConfig.IppPort);
