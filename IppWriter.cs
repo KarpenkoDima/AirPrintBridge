@@ -79,6 +79,17 @@ public class IppWriter
         WriteInt(value);
     }
 
+    /// Записывает булев атрибут (tag 0x22). Размер значения строго 1 байт по RFC 8010!
+    public void WriteBooleanAttribute(string name, bool value)
+    {
+        var nameBytes = System.Text.Encoding.UTF8.GetBytes(name);
+        _bw.Write((byte)0x22); // ValueTagBoolean
+        WriteShort((short)nameBytes.Length);
+        _bw.Write(nameBytes);
+        WriteShort(1); // boolean всегда 1 байт в IPP
+        _bw.Write((byte)(value ? 1 : 0));
+    }
+
     /// Записывает атрибут типа rangeOfInteger (tag 0x33): lower + upper, 8 байт итого.
     /// Используется для copies-supported и подобных диапазонных атрибутов.
     public void WriteRangeAttribute(byte valueTag, string name, int lower, int upper)
