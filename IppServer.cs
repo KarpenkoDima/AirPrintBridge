@@ -122,24 +122,21 @@ public class IppServer : BackgroundService
          return Task.CompletedTask;*/
 
         _listener = new HttpListener();
-
-        // Динамически находим локальный IPv4 адрес (192.168.x.x, 10.x.x.x и т.д.)
-        var localIp = System.Net.Dns.GetHostAddresses(System.Net.Dns.GetHostName())
-            .FirstOrDefault(ip => ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork
-                                  && !System.Net.IPAddress.IsLoopback(ip)
-                                  && (ip.ToString().StartsWith("192.168.") || ip.ToString().StartsWith("10.") || ip.ToString().StartsWith("172.")));
-
         _listener.Prefixes.Add($"http://127.0.0.1:{_config.IppPort}/");
 
-        if (localIp != null)
+        // Биндим на ВСЕ non-loopback IPv4 адреса, чтобы не зависеть от порядка,
+        // в котором Dns.GetHostAddresses() возвращает интерфейсы.
+        // На Windows+WSL первым может оказаться 172.19.x.x (WSL), а не 192.168.x.x (Ethernet).
+        // mDNS рекламирует 192.168.x.x, поэтому HttpListener ОБЯЗАН слушать на нём тоже.
+        var allLocalIps = System.Net.Dns.GetHostAddresses(System.Net.Dns.GetHostName())
+            .Where(ip => ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork
+                         && !System.Net.IPAddress.IsLoopback(ip))
+            .ToList();
+
+        foreach (var ip in allLocalIps)
         {
-            // Слушаем актуальный IP текущей сети
-            _listener.Prefixes.Add($"http://{localIp}:{_config.IppPort}/");
-            _logger.LogInformation("Binding IppServer to IP: {IP}:{Port}", localIp, _config.IppPort);
-        }
-        else
-        {
-            _logger.LogWarning("Local LAN IP not found. Binding only to localhost.");
+            _listener.Prefixes.Add($"http://{ip}:{_config.IppPort}/");
+            _logger.LogInformation("Binding IppServer to IP: {IP}:{Port}", ip, _config.IppPort);
         }
 
         try
