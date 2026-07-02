@@ -26,6 +26,7 @@ public class IppServer : BackgroundService
     private const short OpValidateJob = 0x0004;
     private const short OpGetJobs = 0x000A;
     private const short OpCancelJob = 0x0008;
+    private const short OpGetJobAttribs = 0x0009;
 
     // IPP attribute group tags
     private const byte TagOperationAttribs = 0x01;
@@ -236,9 +237,10 @@ public class IppServer : BackgroundService
         {
             OpGetPrinterAttribs => BuildGetPrinterAttributesResponse(requestId),
             OpValidateJob => BuildSimpleSuccessResponse(requestId),
-            OpPrintJob => await HandlePrintJob(req, requestId, data),            
+            OpPrintJob => await HandlePrintJob(req, requestId, data),
             OpGetJobs => BuildGetJobsResponse(requestId),
             OpCancelJob => BuildSimpleSuccessResponse(requestId),
+            OpGetJobAttribs => BuildGetJobAttributesResponse(requestId),
             _ => BuildSimpleSuccessResponse(requestId)
         };
 
@@ -290,6 +292,9 @@ public class IppServer : BackgroundService
         w.WriteIntAttributeAdditional(ValueTagEnum, OpGetPrinterAttribs);
         w.WriteIntAttributeAdditional(ValueTagEnum, OpGetJobs);
         w.WriteIntAttributeAdditional(ValueTagEnum, OpCancelJob);
+        // Get-Job-Attributes: iOS опрашивает статус задания после Print-Job,
+        // без этой операции спиннер «Печать...» может висеть бесконечно
+        w.WriteIntAttributeAdditional(ValueTagEnum, OpGetJobAttribs);
 
         w.WriteAttribute(ValueTagCharset, "charset-configured", "utf-8");
         w.WriteAttribute(ValueTagCharset, "charset-supported", "utf-8");
@@ -339,6 +344,10 @@ public class IppServer : BackgroundService
         w.WriteAttribute(ValueTagKeyword, "pdl-override-supported", "attempted");
         w.WriteBooleanAttribute("printer-is-accepting-jobs", true);
         w.WriteIntAttribute("queued-job-count", ValueTagInteger, 0);
+
+        // Обязательные по RFC 8011 §5.4 атрибуты описания принтера
+        w.WriteIntAttribute("printer-up-time", ValueTagInteger, (int)(Environment.TickCount64 / 1000));
+        w.WriteAttribute(ValueTagKeyword, "compression-supported", "none");
 
         w.WriteByte(TagEndOfAttribs);
         return w.ToArray();
@@ -455,6 +464,33 @@ public class IppServer : BackgroundService
             w.WriteIntAttribute("job-state", ValueTagEnum, 9);
             w.WriteAttribute(ValueTagKeyword, "job-state-reasons", "job-completed-successfully");
         }
+
+        w.WriteByte(TagEndOfAttribs);
+        return w.ToArray();
+    }
+
+    /// <summary>
+    /// Get-Job-Attributes: iOS опрашивает статус задания после Print-Job.
+    /// Печать синхронная (HandlePrintJob возвращается после отправки в очередь Windows),
+    /// поэтому всегда отвечаем job-state=9 (completed) — iOS закрывает спиннер печати.
+    /// </summary>
+    private byte[] BuildGetJobAttributesResponse(int requestId)
+    {
+        var w = new IppWriter();
+        w.WriteVersion(VersionIpp11);
+        w.WriteShort(StatusOk);
+        w.WriteInt(requestId);
+
+        w.WriteByte(TagOperationAttribs);
+        w.WriteAttribute(ValueTagCharset, "attributes-charset", "utf-8");
+        w.WriteAttribute(ValueTagNatLang, "attributes-natural-language", "en");
+
+        w.WriteByte(0x05); // job-attributes-tag
+        w.WriteIntAttribute("job-id", ValueTagInteger, 1);
+        var hostName = "AirPrint-Bridge-Server.local";
+        w.WriteAttribute(ValueTagUri, "job-uri", $"ipp://{hostName}:{_config.IppPort}/jobs/1");
+        w.WriteIntAttribute("job-state", ValueTagEnum, 9);
+        w.WriteAttribute(ValueTagKeyword, "job-state-reasons", "job-completed-successfully");
 
         w.WriteByte(TagEndOfAttribs);
         return w.ToArray();
