@@ -1,14 +1,20 @@
-﻿public class PrinterConfig
-{
-    // Имя, которое увидит пользователь на iPhone в списке принтеров
-    public string DisplayName { get; set; } = "AirPrint Printer";
+namespace AirPrintBridge;
 
-    // Имя принтера в Windows (из Device & Printers
+public sealed class PrinterConfig
+{
+    // Empty: "<Windows printer name> (AirPrint)".
+    public string DisplayName { get; set; } = "";
+
+    // Empty: use the default Windows printer.
     public string WindowsPrinterName { get; set; } = "";
 
-    // Порт IPP сервера. 631 - стандартный, но требует прав администратора
-    public int IppPort { get; set; } = 631;
+    public int IppPort { get; set; } = 8631;
 
-    // Путь ресурса принтера в URI, iPhone будет слать POST на /printers/canon
     public string ResourcePath { get; set; } = "/printers/default";
+
+    // Optional LAN IPv4 override. Normally detected automatically.
+    public string PreferredIpAddress { get; set; } = "";
+
+    // Save incoming jobs to %TEMP% for diagnostics.
+    public bool SaveIncomingJobs { get; set; }
 }

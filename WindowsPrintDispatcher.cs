@@ -1,5 +1,4 @@
-﻿// WindowsPrintDispatcher.cs
-using Microsoft.Extensions.Options;
+// WindowsPrintDispatcher.cs
 using PdfiumViewer;
 using System.Drawing.Printing;
 
@@ -8,21 +7,21 @@ namespace AirPrintBridge;
 public class WindowsPrintDispatcher
 {
     private readonly ILogger<WindowsPrintDispatcher> _logger;
-    private readonly PrinterConfig _config;
+    private readonly PrinterRuntime _printer;
 
     public WindowsPrintDispatcher(
         ILogger<WindowsPrintDispatcher> logger,
-        IOptions<PrinterConfig> config)
+        PrinterRuntime printer)
     {
         _logger = logger;
-        _config = config.Value;
+        _printer = printer;
     }
 
     public async Task PrintAsync(byte[] documentData, string format, string jobName)
     {
         _logger.LogInformation(
             "Sending to Windows printer '{Printer}': job='{Job}', format={Format}",
-            _config.WindowsPrinterName, jobName, format);
+            _printer.WindowsPrinterName, jobName, format);
 
         // Запускаем печать в отдельном потоке — GDI/COM не любит async
         await Task.Run(() =>
@@ -35,19 +34,11 @@ public class WindowsPrintDispatcher
 
                 case "image/urf":
                 case "image/pwg-raster":
-                    // PWG Raster — растровый формат Apple, конвертируем через temp PDF
-                    // На этапе MVP: сохраняем файл и логируем, полная конвертация — следующий шаг
-                    _logger.LogWarning(
-                        "PWG/URF format received. Full raster support coming soon. " +
-                        "Saved to temp for inspection.");
-                    var path = Path.Combine(Path.GetTempPath(),
-                        $"airprint_raster_{DateTime.Now:yyyyMMdd_HHmmss}.bin");
-                    File.WriteAllBytes(path, documentData);
-                    break;
+                    throw new NotSupportedException(
+                        "Apple/PWG raster input is not implemented yet. PDF input is supported.");
 
                 default:
-                    _logger.LogWarning("Unknown document format: {Format}", format);
-                    break;
+                    throw new NotSupportedException($"Document format '{format}' is not supported.");
             }
         });
     }
@@ -64,17 +55,17 @@ public class WindowsPrintDispatcher
         var availablePrinters = PrinterSettings.InstalledPrinters
             .Cast<string>().ToList();
 
-        if (!availablePrinters.Contains(_config.WindowsPrinterName))
+        if (!availablePrinters.Contains(_printer.WindowsPrinterName, StringComparer.OrdinalIgnoreCase))
         {
             _logger.LogError(
                 "Printer '{Name}' not found. Available: {List}",
-                _config.WindowsPrinterName,
+                _printer.WindowsPrinterName,
                 string.Join(", ", availablePrinters));
             throw new InvalidOperationException(
-                $"Printer '{_config.WindowsPrinterName}' not found in system");
+                $"Printer '{_printer.WindowsPrinterName}' not found in system");
         }
 
-        printDoc.PrinterSettings.PrinterName = _config.WindowsPrinterName;
+        printDoc.PrinterSettings.PrinterName = _printer.WindowsPrinterName;
         printDoc.DocumentName = jobName;
 
         // StandardPrintController — без диалогового окна, тихая печать
@@ -82,7 +73,7 @@ public class WindowsPrintDispatcher
 
         _logger.LogInformation(
             "Starting print: '{Job}' → '{Printer}', {Pages} page(s)",
-            jobName, _config.WindowsPrinterName, pdfDoc.PageCount);
+            jobName, _printer.WindowsPrinterName, pdfDoc.PageCount);
 
         printDoc.Print();
 

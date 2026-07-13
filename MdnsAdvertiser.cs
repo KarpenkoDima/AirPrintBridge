@@ -1,104 +1,70 @@
-﻿using Makaretu.Dns;
-using Microsoft.Extensions.Options;
-using System.Threading;
+using Makaretu.Dns;
 
-public class MdnsAdvertiser :BackgroundService
+namespace AirPrintBridge;
+
+public sealed class MdnsAdvertiser : BackgroundService
 {
     private readonly ILogger<MdnsAdvertiser> _logger;
-    private readonly PrinterConfig _printerConfig;
-    private  MulticastService _mdns;
-    private  ServiceDiscovery _sd;
+    private readonly PrinterRuntime _printer;
+    private MulticastService? _mdns;
+    private ServiceDiscovery? _discovery;
 
-    public MdnsAdvertiser(ILogger<MdnsAdvertiser> logger, IOptions<PrinterConfig> options)
+    public MdnsAdvertiser(ILogger<MdnsAdvertiser> logger, PrinterRuntime printer)
     {
-        this._logger = logger;
-        _printerConfig = options.Value; // Извлекаем сам объект из обертки
+        _logger = logger;
+        _printer = printer;
     }
 
-    public Task StartAsync(CancellationToken cancellationToken)
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        // Находим IP (ваш новый 192.168.11.15)
-        var localIp = MulticastService.GetIPAddresses()
-            .FirstOrDefault(x => x.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork
-                                 && x.ToString().StartsWith("192.168")); // ОБРАТИТЕ ВНИМАНИЕ НА ПОДСЕТЬ
-
-        if (localIp == null) return Task.CompletedTask;
-
         _mdns = new MulticastService();
-        _sd = new ServiceDiscovery(_mdns);
+        _discovery = new ServiceDiscovery(_mdns);
 
         var profile = new ServiceProfile(
-            instanceName: _printerConfig.DisplayName,
-            serviceName: "_ipp._tcp",
-            port: (ushort)_printerConfig.IppPort
-        );
+            _printer.DisplayName,
+            "_ipp._tcp",
+            (ushort)_printer.Config.IppPort);
 
         profile.Resources.Clear();
-
-        var hostName = "AirPrint-Bridge-Server.local";
-
-        // 1. Указываем хост
         profile.Resources.Add(new SRVRecord
         {
             Name = profile.FullyQualifiedName,
-            Port = (ushort)_printerConfig.IppPort,
-            Target = hostName
+            Port = (ushort)_printer.Config.IppPort,
+            Target = _printer.HostName
         });
-
-        // 2. Привязываем IP
         profile.Resources.Add(new ARecord
         {
-            Name = hostName,
-            Address = localIp
+            Name = _printer.HostName,
+            Address = _printer.LanAddress
         });
-
-        // Subtype _universal регистрируется через profile.Subtypes — только так библиотека
-        // Makaretu.Dns.Multicast создаёт PTR-запись _universal._sub._ipp._tcp.local и
-        // отвечает на неё при mDNS-запросах от iOS.
-        // Добавление PTRRecord вручную в profile.Resources НЕ работает — библиотека
-        // не отвечает на внешние PTR-запросы для произвольных имён из Resources.
         profile.Subtypes.Add("_universal");
 
-        // 4. ИДЕАЛЬНЫЕ TXT-ЗАПИСИ
-        // Создаем TXTRecord вручную, чтобы iPhone получил их в одном пакете
         var txt = new TXTRecord { Name = profile.FullyQualifiedName };
         txt.Strings.Add("txtvers=1");
         txt.Strings.Add("qtotal=1");
-        // rp должно точно совпадать с маршрутом в IppServer
-        txt.Strings.Add($"rp={_printerConfig.ResourcePath}");
-        txt.Strings.Add($"ty={_printerConfig.DisplayName}");
-        txt.Strings.Add("note=Windows Shared Printer");
-        txt.Strings.Add("product=(Canon MF3010)");
-
-        // КРИТИЧНО: без image/urf iOS считает принтер не AirPrint-совместимым и не показывает его.
-        // PDF указан первым — iOS будет присылать PDF для документов/текста.
-        // image/urf нужен только для фейс-контроля; если iOS пришлёт URF, PrintAsync его отклонит.
+        txt.Strings.Add($"rp={_printer.ResourcePath.TrimStart('/')}");
+        txt.Strings.Add($"ty={_printer.DisplayName}");
+        txt.Strings.Add("note=Windows printer via AirPrint Bridge");
+        txt.Strings.Add($"product=({_printer.WindowsPrinterName})");
         txt.Strings.Add("pdl=application/pdf,image/urf");
-        // Параметры Apple Raster. CP1=CMYK/grayscale, W8=8bit grey, RS600=600dpi, DM1=duplex-manual.
-        // SRGB24 убран: принтер монохромный (Color=F).
-        txt.Strings.Add("URF=V1.4,CP1,W8,RS600,DM1");
-
+        txt.Strings.Add($"URF={BuildUrfCapabilities()}");
         txt.Strings.Add("air=none");
-        txt.Strings.Add("UUID=5365e660-f657-41a6-88a4-0994132ad372");
-
-        // Дополнительные параметры
-        txt.Strings.Add("Color=F"); // Canon MF3010 — монохромный принтер
-        txt.Strings.Add("Duplex=F");
+        txt.Strings.Add($"UUID={_printer.Uuid:D}");
+        txt.Strings.Add($"Color={ToTxtBool(_printer.SupportsColor)}");
+        txt.Strings.Add($"Duplex={ToTxtBool(_printer.SupportsDuplex)}");
         txt.Strings.Add("Scan=F");
-
+        txt.Strings.Add("Fax=F");
         profile.Resources.Add(txt);
 
-        _sd.Advertise(profile);
+        _discovery.Advertise(profile);
 
-        // The Makaretu library registers the subtype for announcement but does NOT respond
-        // to incoming PTR queries for _universal._sub._ipp._tcp.local.
-        // iOS sends this exact query to discover AirPrint printers, so we must answer it manually.
+        // Makaretu announces subtypes but does not answer this AirPrint discovery query.
         var subtypeFqdn = "_universal._sub._ipp._tcp.local";
-        _mdns.QueryReceived += (sender, e) =>
+        _mdns.QueryReceived += (_, e) =>
         {
-            if (!e.Message.Questions.Any(q =>
-                    q.Type == DnsType.PTR &&
-                    q.Name.ToString().TrimEnd('.') == subtypeFqdn))
+            if (!e.Message.Questions.Any(q => q.Type == DnsType.PTR &&
+                    string.Equals(q.Name.ToString().TrimEnd('.'), subtypeFqdn,
+                        StringComparison.OrdinalIgnoreCase)))
                 return;
 
             var response = new Message { AA = true };
@@ -112,132 +78,36 @@ public class MdnsAdvertiser :BackgroundService
         };
 
         _mdns.Start();
+        _logger.LogInformation(
+            "Advertising '{DisplayName}' at {Uri} ({Address}); Windows queue: '{Queue}'",
+            _printer.DisplayName, _printer.PrinterUri, _printer.LanAddress, _printer.WindowsPrinterName);
 
-        _logger.LogInformation("mDNS started on {IP}:{Port}", localIp, _printerConfig.IppPort);
-
-        return Task.CompletedTask;
-        /* _logger.LogInformation("Starting mDNS advertiser for '{Name}'", _printerConfig.DisplayName);
-
-         var localIp = MulticastService.GetIPAddresses()
-             .FirstOrDefault(x => x.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork
-                                  && x.ToString().StartsWith("192.168.11"));
-
-         if (localIp == null)
-         {
-             _logger.LogError("No local IP found starting with 192.168.11.x");
-             return Task.CompletedTask;
-         }
-
-         _mdns = new MulticastService();
-         _sd = new ServiceDiscovery(_mdns);
-
-         var profile = new ServiceProfile(
-             instanceName: _printerConfig.DisplayName,
-             serviceName: "_ipp._tcp",
-             port: (ushort)_printerConfig.IppPort
-         );
-
-         profile.Resources.Clear();
-
-         var hostName = "AirPrint-Bridge-Server.local";
-
-         // 1. SRV запись
-         profile.Resources.Add(new SRVRecord
-         {
-             Name = profile.FullyQualifiedName,
-             Port = (ushort)_printerConfig.IppPort,
-             Target = hostName
-         });
-
-         // 2. A запись (IP)
-         profile.Resources.Add(new ARecord
-         {
-             Name = hostName,
-             Address = localIp
-         });
-
-         // 3. TXT запись — КРИТИЧЕСКИ ВАЖНО ДЛЯ AIRPRINT
-         var txt = new TXTRecord { Name = profile.FullyQualifiedName };
-
-         // ОБЯЗАТЕЛЬНЫЕ ПОЛЯ:
-         txt.Strings.Add("txtvers=1");                                    // Версия TXT формата
-         txt.Strings.Add($"rp={_printerConfig.ResourcePath}");            // Resource path
-         txt.Strings.Add($"ty={_printerConfig.DisplayName}");             // Printer type
-         txt.Strings.Add("pdl=application/pdf,image/urf");                // Supported formats
-         txt.Strings.Add("qtotal=1");                                     // Number of queues
-
-         // URF — Apple Universal Raster Format capabilities
-         // CP1 = CMYK/RGB, W8 = 8-bit grayscale, SRGB24 = sRGB color
-         // RS600 = 600dpi, DM1 = duplex manual
-         txt.Strings.Add("URF=V1.4,CP1,W8,SRGB24,RS600");
-
-         // ВОЗМОЖНОСТИ ПРИНТЕРА:
-         txt.Strings.Add("Color=T");                                      // Supports color
-         txt.Strings.Add("Duplex=F");                                     // No duplex (MF3010)
-         txt.Strings.Add("Scan=F");                                       // No scanner
-         txt.Strings.Add("Fax=F");                                        // No fax
-         txt.Strings.Add("Copies=T");                                     // Supports copies
-         txt.Strings.Add("Collate=F");                                    // No collate
-         txt.Strings.Add("Bind=F");                                       // No binding
-         txt.Strings.Add("Sort=F");                                       // No sorting
-         txt.Strings.Add("Staple=F");                                     // No stapling
-         txt.Strings.Add("Punch=F");                                      // No punching
-
-         // MEDIA SUPPORT:
-         txt.Strings.Add("PaperMax=legal-A4");                            // Max paper size
-         txt.Strings.Add("kind=document,photo");                          // Print types
-
-         // PRINTER STATE:
-         txt.Strings.Add("priority=50");                                  // Priority
-         txt.Strings.Add("note=Windows Shared Printer via AirPrint");    // Description
-
-         // AUTHENTICATION & SECURITY:
-         txt.Strings.Add("air=none");                                     // No auth required
-         txt.Strings.Add("TLS=1.2");                                      // TLS version (optional)
-
-         // UUID — фиксированный, не меняем между перезапусками
-         txt.Strings.Add("UUID=5365e660-f657-41a6-88a4-0994132ad372");
-
-         // ADMINISTRATIVE:
-         txt.Strings.Add("adminurl=http://192.168.0.107:631/");           // Admin page
-         txt.Strings.Add("product=(Canon MF3010)");                       // Product name
-
-         profile.Resources.Add(txt);
-
-         // 4. PTR для универсального поиска (_universal._sub._ipp._tcp)
-         profile.Resources.Add(new PTRRecord
-         {
-             Name = "_universal._sub._ipp._tcp.local",
-             DomainName = profile.FullyQualifiedName
-         });
-
-         // 5. PTR для основного сервиса
-         profile.Resources.Add(new PTRRecord
-         {
-             Name = "_ipp._tcp.local",
-             DomainName = profile.FullyQualifiedName
-         });
-
-         _sd.Advertise(profile);
-         _mdns.Start();
-
-         _logger.LogInformation(
-             "mDNS advertising started. Printer '{Name}' on {IP}:{Port}",
-             _printerConfig.DisplayName, localIp, _printerConfig.IppPort);
-
-         return Task.CompletedTask;*/
+        try
+        {
+            await Task.Delay(Timeout.Infinite, stoppingToken);
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            // Normal service shutdown.
+        }
     }
 
-    public Task StopAsync(CancellationToken cancellationToken)
+    public override Task StopAsync(CancellationToken cancellationToken)
     {
         _logger.LogInformation("Stopping mDNS advertiser");
-        _sd?.Dispose();
+        _discovery?.Dispose();
         _mdns?.Stop();
-        return Task.CompletedTask;
+        return base.StopAsync(cancellationToken);
     }
 
-    protected override Task ExecuteAsync(CancellationToken stoppingToken)
+    private string BuildUrfCapabilities()
     {
-        return StartAsync(stoppingToken);
+        var values = new List<string> { "V1.4", "W8", "RS600" };
+        values.Add(_printer.SupportsColor ? "SRGB24" : "CP1");
+        if (_printer.SupportsDuplex)
+            values.Add("DM1");
+        return string.Join(',', values);
     }
+
+    private static string ToTxtBool(bool value) => value ? "T" : "F";
 }

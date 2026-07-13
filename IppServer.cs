@@ -1,7 +1,5 @@
-﻿// IppServer.cs
-using Makaretu.Dns;
+// IppServer.cs
 using Microsoft.Extensions.Options;
-using System.IO.Pipelines;
 using System.Net;
 
 namespace AirPrintBridge;
@@ -10,6 +8,7 @@ public class IppServer : BackgroundService
 {
     private readonly ILogger<IppServer> _logger;
     private readonly PrinterConfig _config;
+    private readonly PrinterRuntime _printer;
     private HttpListener? _listener;
     private Task? _listenerTask;
     private CancellationTokenSource? _cts;
@@ -48,14 +47,19 @@ public class IppServer : BackgroundService
     private const byte ValueTagRangeOfInt = 0x33;
     private const byte ValueTagResolution = 0x32;
 
-    public IppServer(ILogger<IppServer> logger, IOptions<PrinterConfig> config, WindowsPrintDispatcher printDispatcher)
+    public IppServer(
+        ILogger<IppServer> logger,
+        IOptions<PrinterConfig> config,
+        PrinterRuntime printer,
+        WindowsPrintDispatcher printDispatcher)
     {
         _logger = logger;
         _config = config.Value;
+        _printer = printer;
         _printDispatcher = printDispatcher;
     }
 
-    public Task StartAsync(CancellationToken cancellationToken)
+    private Task StartListenerAsync(CancellationToken cancellationToken)
     {/*
         // КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ:
         // HttpListener с "+" требует netsh регистрации или прав администратора
@@ -124,20 +128,9 @@ public class IppServer : BackgroundService
         _listener = new HttpListener();
         _listener.Prefixes.Add($"http://127.0.0.1:{_config.IppPort}/");
 
-        // Биндим на ВСЕ non-loopback IPv4 адреса, чтобы не зависеть от порядка,
-        // в котором Dns.GetHostAddresses() возвращает интерфейсы.
-        // На Windows+WSL первым может оказаться 172.19.x.x (WSL), а не 192.168.x.x (Ethernet).
-        // mDNS рекламирует 192.168.x.x, поэтому HttpListener ОБЯЗАН слушать на нём тоже.
-        var allLocalIps = System.Net.Dns.GetHostAddresses(System.Net.Dns.GetHostName())
-            .Where(ip => ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork
-                         && !System.Net.IPAddress.IsLoopback(ip))
-            .ToList();
-
-        foreach (var ip in allLocalIps)
-        {
-            _listener.Prefixes.Add($"http://{ip}:{_config.IppPort}/");
-            _logger.LogInformation("Binding IppServer to IP: {IP}:{Port}", ip, _config.IppPort);
-        }
+        // Bind the same LAN address that mDNS advertises. This avoids WSL/VPN adapters.
+        _listener.Prefixes.Add($"http://{_printer.LanAddress}:{_config.IppPort}/");
+        _logger.LogInformation("Binding IPP server to {IP}:{Port}", _printer.LanAddress, _config.IppPort);
 
         try
         {
@@ -146,7 +139,9 @@ public class IppServer : BackgroundService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to start HttpListener. Port might be busy.");
+            _logger.LogError(ex,
+                "Failed to start HttpListener on port {Port}. Check the port and Windows HTTP URL ACL.",
+                _config.IppPort);
             throw;
         }
 
@@ -267,18 +262,15 @@ public class IppServer : BackgroundService
         // --- Printer Attributes ---
         w.WriteByte(TagPrinterAttribs);
 
-        var hostName = "AirPrint-Bridge-Server.local";
-        var printerUri = $"ipp://{hostName}:{_config.IppPort}/{_config.ResourcePath}";
-
-        w.WriteAttribute(ValueTagUri, "printer-uri-supported", printerUri);
+        w.WriteAttribute(ValueTagUri, "printer-uri-supported", _printer.PrinterUri);
 
         // 1. КРИТИЧНО: UUID должен быть с префиксом urn:uuid: и точно совпадать с mDNS
-        w.WriteAttribute(ValueTagUri, "printer-uuid", "urn:uuid:5365e660-f657-41a6-88a4-0994132ad372");
+        w.WriteAttribute(ValueTagUri, "printer-uuid", $"urn:uuid:{_printer.Uuid:D}");
 
         w.WriteAttribute(ValueTagKeyword, "uri-security-supported", "none");
         w.WriteAttribute(ValueTagKeyword, "uri-authentication-supported", "none");
-        w.WriteAttribute(ValueTagNameNoLang, "printer-name", _config.DisplayName);
-        w.WriteAttribute(ValueTagTextNoLang, "printer-make-and-model", "Canon MF3010");
+        w.WriteAttribute(ValueTagNameNoLang, "printer-name", _printer.DisplayName);
+        w.WriteAttribute(ValueTagTextNoLang, "printer-make-and-model", _printer.WindowsPrinterName);
 
         w.WriteIntAttribute("printer-state", ValueTagEnum, 3);
         w.WriteAttribute(ValueTagKeyword, "printer-state-reasons", "none");
@@ -307,19 +299,22 @@ public class IppServer : BackgroundService
         w.WriteAttribute(ValueTagMimeType, "document-format-supported", "application/pdf");
         w.WriteAttributeAdditional(ValueTagMimeType, "image/urf");
 
-        // Обязательное подтверждение URF для AirPrint (без SRGB24 — принтер монохромный).
+        // URF is required by iOS discovery. PDF remains the preferred input format.
         w.WriteAttribute(ValueTagKeyword, "urf-supported", "V1.4");
-        w.WriteAttributeAdditional(ValueTagKeyword, "CP1");
         w.WriteAttributeAdditional(ValueTagKeyword, "W8");
         w.WriteAttributeAdditional(ValueTagKeyword, "RS600");
-        w.WriteAttributeAdditional(ValueTagKeyword, "DM1");
+        w.WriteAttributeAdditional(ValueTagKeyword, _printer.SupportsColor ? "SRGB24" : "CP1");
+        if (_printer.SupportsDuplex)
+            w.WriteAttributeAdditional(ValueTagKeyword, "DM1");
 
-        // Canon MF3010 — монохромный. Должно совпадать с Color=F в mDNS TXT.
-        // Boolean в IPP строго 1 байт (RFC 8010), WriteIntAttribute даёт 4 — iOS парсер падает.
-        w.WriteBooleanAttribute("color-supported", false);
+        w.WriteBooleanAttribute("color-supported", _printer.SupportsColor);
 
-        // Стороны: MF3010 без дуплекса — только one-sided
         w.WriteAttribute(ValueTagKeyword, "sides-supported", "one-sided");
+        if (_printer.SupportsDuplex)
+        {
+            w.WriteAttributeAdditional(ValueTagKeyword, "two-sided-long-edge");
+            w.WriteAttributeAdditional(ValueTagKeyword, "two-sided-short-edge");
+        }
         w.WriteAttribute(ValueTagKeyword, "sides-default", "one-sided");
 
         // Финишинг: 3 = none (стандартный enum IPP)
@@ -328,7 +323,7 @@ public class IppServer : BackgroundService
 
         // Копии: поддерживается диапазон 1-99, по умолчанию 1
         w.WriteIntAttribute("copies-default", ValueTagInteger, 1);
-        w.WriteRangeAttribute(0x33, "copies-supported", 1, 99);
+        w.WriteRangeAttribute(0x33, "copies-supported", 1, _printer.MaximumCopies);
 
         // Качество печати: 3=draft, 4=normal, 5=high; по умолчанию normal
         w.WriteIntAttribute("print-quality-default", ValueTagEnum, 4);
@@ -357,15 +352,6 @@ public class IppServer : BackgroundService
         w.WriteByte((byte)units); // 3 = dots per inch
     }
 
-    // Добавь метод для получения локального IP
-    private string GetLocalIp()
-    {
-        return MulticastService.GetIPAddresses()
-            .FirstOrDefault(x => x.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork
-                                 && x.ToString().StartsWith("192.168.0"))
-            ?.ToString() ?? "192.168.0.107";
-    }
-
     // Заменяем заглушку BuildPrintJobResponse на реальную обработку
     private async Task<byte[]> HandlePrintJob(HttpListenerRequest req, int requestId, byte[] rawIppData)
     {
@@ -391,10 +377,16 @@ public class IppServer : BackgroundService
                 "Print-Job: format={Format}, size={Size} bytes, job='{Name}'",
                 documentFormat, documentData.Length, jobName);
 
-            // Сохраняем для диагностики (пока разрабатываем)
-            var debugPath = Path.Combine(Path.GetTempPath(), $"airprint_job_{DateTime.Now:yyyyMMdd_HHmmss}.pdf");
-            await File.WriteAllBytesAsync(debugPath, documentData);
-            _logger.LogInformation("Debug: document saved to {Path}", debugPath);
+            if (_config.SaveIncomingJobs)
+            {
+                var extension = documentFormat.Equals("application/pdf", StringComparison.OrdinalIgnoreCase)
+                    ? ".pdf"
+                    : ".bin";
+                var debugPath = Path.Combine(Path.GetTempPath(),
+                    $"airprint_job_{DateTime.Now:yyyyMMdd_HHmmss_fff}{extension}");
+                await File.WriteAllBytesAsync(debugPath, documentData);
+                _logger.LogInformation("Diagnostic copy saved to {Path}", debugPath);
+            }
 
             // Отправляем на печать
             await _printDispatcher.PrintAsync(documentData, documentFormat, jobName);
@@ -448,8 +440,7 @@ public class IppServer : BackgroundService
             w.WriteIntAttribute("job-id", ValueTagInteger, 1);
 
             // ИСПРАВЛЕНИЕ 4: Избавляемся от localhost и здесь
-            var hostName = "AirPrint-Bridge-Server.local";
-            w.WriteAttribute(ValueTagUri, "job-uri", $"ipp://{hostName}:{_config.IppPort}/jobs/1");
+            w.WriteAttribute(ValueTagUri, "job-uri", $"ipp://{_printer.HostName}:{_config.IppPort}/jobs/1");
 
             // job-state: 3=pending, 4=pending-held, 5=processing, 9=completed
             w.WriteIntAttribute("job-state", ValueTagEnum, 9);
@@ -480,7 +471,7 @@ public class IppServer : BackgroundService
             <html><body>
             <h2>AirPrint Bridge is running</h2>
             <p>This service makes your Windows printer available to Apple devices via AirPrint.</p>
-            <p>IPP endpoint: <code>/printers/canon</code></p>
+            <p>IPP endpoint is configured in <code>Printer:ResourcePath</code>.</p>
             </body></html>
             """;
         var bytes = System.Text.Encoding.UTF8.GetBytes(html);
@@ -499,18 +490,19 @@ public class IppServer : BackgroundService
         _ => $"Unknown(0x{op:X4})"
     };
 
-    public async Task StopAsync(CancellationToken cancellationToken)
+    public override async Task StopAsync(CancellationToken cancellationToken)
     {
         _logger.LogInformation("Stopping IPP server");
         _cts?.Cancel();
         _listener?.Stop();
         if (_listenerTask != null)
             await _listenerTask.ConfigureAwait(false);
+        await base.StopAsync(cancellationToken).ConfigureAwait(false);
     }
 
     protected override Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        return StartAsync(stoppingToken);
+        return StartListenerAsync(stoppingToken);
     }
 
     /// <summary>

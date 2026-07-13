@@ -1,17 +1,25 @@
 using AirPrintBridge;
+using Microsoft.Extensions.Hosting.WindowsServices;
+using System.Runtime.Versioning;
+
+[assembly: SupportedOSPlatform("windows")]
 
 var builder = Host.CreateApplicationBuilder(args);
 
-// Чтобы работало как Windows Service (фоновый процесс)
-builder.Services.AddWindowsService(options =>
+// Р§С‚РѕР±С‹ СЂР°Р±РѕС‚Р°Р»Рѕ РєР°Рє Windows Service (С„РѕРЅРѕРІС‹Р№ РїСЂРѕС†РµСЃСЃ)
+if (WindowsServiceHelpers.IsWindowsService())
 {
-    options.ServiceName = "AirPrint Bridge";
-});
+    builder.Services.AddWindowsService(options =>
+    {
+        options.ServiceName = "AirPrint Bridge";
+    });
+}
 
-// Конфигурация нашего принтера бер1ётся из appsettings.json
+// РљРѕРЅС„РёРіСѓСЂР°С†РёСЏ РїСЂРёРЅС‚РµСЂР° Р±РµСЂС‘С‚СЃСЏ РёР· appsettings.json.
 builder.Services.Configure<PrinterConfig>(builder.Configuration.GetSection("Printer"));
+builder.Services.AddSingleton<PrinterRuntime>();
 
-// Два независимых hosted service: один занимается mDNS, другой -  IPP сервером
+// Р”РІР° РЅРµР·Р°РІРёСЃРёРјС‹С… hosted service: РѕРґРёРЅ Р·Р°РЅРёРјР°РµС‚СЃСЏ mDNS, РґСЂСѓРіРѕР№ -  IPP СЃРµСЂРІРµСЂРѕРј
 builder.Services.AddHostedService<MdnsAdvertiser>();
 builder.Services.AddHostedService<IppServer>();
 

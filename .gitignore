@@ -488,3 +488,7 @@ git-past.ps1
 .git_fake_current_date
 
 NOTES.md
+
+# Required project sources can be hidden by an overly broad global gitignore.
+!PrinterRuntime.cs
+!NuGet.Config
