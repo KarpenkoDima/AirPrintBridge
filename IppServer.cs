@@ -126,11 +126,9 @@ public class IppServer : BackgroundService
          return Task.CompletedTask;*/
 
         _listener = new HttpListener();
-        _listener.Prefixes.Add($"http://127.0.0.1:{_config.IppPort}/");
-
-        // Bind the same LAN address that mDNS advertises. This avoids WSL/VPN adapters.
-        _listener.Prefixes.Add($"http://{_printer.LanAddress}:{_config.IppPort}/");
-        _logger.LogInformation("Binding IPP server to {IP}:{Port}", _printer.LanAddress, _config.IppPort);
+        var prefix = BuildListenerPrefix(_config.IppPort);
+        _listener.Prefixes.Add(prefix);
+        _logger.LogInformation("Binding IPP server to {Prefix}", prefix);
 
         try
         {
@@ -504,6 +502,8 @@ public class IppServer : BackgroundService
     {
         return StartListenerAsync(stoppingToken);
     }
+
+    internal static string BuildListenerPrefix(int port) => $"http://+:{port}/";
 
     /// <summary>
     /// Корректно ищет конец IPP-атрибутов (тег 0x03) путём структурного обхода пакета.
